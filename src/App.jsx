@@ -15,9 +15,9 @@ import {
 // ── Sabitler ────────────────────────────────────────────────
 const DEFAULT_PERSONELLER = ['Personel 1', 'Personel 2', 'Personel 3'];
 const KATEGORILER = ['Ofis', 'Üretim/Tarım', 'Pazarlama', 'Seyahat', 'Diğer'];
-const KDV_ORANLARI = [1, 10, 20];
+const KDV_ORANLARI = [0, 1, 10, 20];
 const RENK_PALETI = ['#6366f1', '#22d3ee', '#f59e0b', '#10b981', '#f43f5e'];
-const LS = { tx: 'muh_tx', kasa: 'muh_kasa', personeller: 'muh_personeller', butce: 'muh_butce', proforma: 'muh_proforma', musteriler: 'muh_musteriler', logo: 'muh_logo' };
+const LS = { tx: 'muh_tx', kasa: 'muh_kasa', personeller: 'muh_personeller', butce: 'muh_butce', proforma: 'muh_proforma', musteriler: 'muh_musteriler', logo: 'muh_logo', sabitGiderler: 'muh_sabit' };
 const BUTCE_DEFAULT = Object.fromEntries(KATEGORILER.map(k => [k, 0]));
 const BIRIMLER = ['Adet', 'Kg', 'Ton', 'm²', 'Saat', 'Gün', 'Ay'];
 
@@ -116,8 +116,9 @@ function parseExcelRows(workbook, personellerList) {
       if (!net || isNaN(net) || net <= 0) { errors.push({ row: i + 1, reason: 'Tutar geçersiz' }); continue; }
       const turRaw = String(col.tur !== -1 ? row[col.tur] : row[1]).toLowerCase();
       const tur = /gelir|income/.test(turRaw) ? 'Gelir' : 'Gider';
-      const kdvRaw = parseInt(String(col.kdvOrani !== -1 ? row[col.kdvOrani] : row[6]).replace(/\D/g, '')) || 20;
-      const kdvOrani = KDV_ORANLARI.includes(kdvRaw) ? kdvRaw : 20;
+      const kdvRawStr = String(col.kdvOrani !== -1 ? row[col.kdvOrani] : row[6]).replace(/[^\d]/g, '');
+      const kdvRaw = kdvRawStr !== '' ? parseInt(kdvRawStr) : null;
+      const kdvOrani = kdvRaw !== null && KDV_ORANLARI.includes(kdvRaw) ? kdvRaw : 20;
       const personelRaw = String(col.personel !== -1 ? row[col.personel] : row[2]).trim();
       const personel = tur === 'Gider' ? (personellerList.find(p => personelRaw.toLowerCase().includes(p.toLowerCase())) || personellerList[0]) : null;
       const katRaw = String(col.kategori !== -1 ? row[col.kategori] : row[4]).trim();
@@ -194,9 +195,17 @@ Mevcut durum:
 - Personel: ${personellerList.join(', ')}
 - Kategoriler: Ofis, Üretim/Tarım, Pazarlama, Seyahat, Diğer
 
+Türkiye KDV oranı kuralları:
+- Kira, aidat, kira ödemesi: %0 (KDV yok)
+- Temel gıda, tarım ürünleri, fide, tohum, gübre: %1
+- Tekstil, giyim, ulaşım, seyahat: %10
+- Genel hizmet, danışmanlık, elektronik, ofis malzemesi, reklam: %20
+- Kullanıcı belirtmediyse kira/aidat türü işlemlerde %0 kullan
+
 Kullanıcı yeni bir işlem girmek istiyorsa YALNIZCA şu JSON'u döndür (başka hiç metin ekleme):
 {"tip":"islem","tur":"Gelir","aciklama":"...","netTutar":1000,"kdvOrani":20,"kategori":"Ofis","personel":"Personel 1"}
 
+kdvOrani değeri: 0, 1, 10 veya 20 olabilir. Kira için mutlaka 0 kullan.
 Soru soruyorsa kısa ve net Türkçe yanıt ver.`;
 
   const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
@@ -217,7 +226,7 @@ Soru soruyorsa kısa ve net Türkçe yanıt ver.`;
     const json = JSON.parse(clean);
     if (json.tip === 'islem') {
       const net = Number(json.netTutar) || 0;
-      const kdvOrani = Number(json.kdvOrani) || 20;
+      const kdvOrani = (json.kdvOrani !== undefined && json.kdvOrani !== null) ? Number(json.kdvOrani) : 20;
       const kdvTutar = hesaplaKdv(net, kdvOrani);
       return { type: 'transaction', data: { id: Date.now(), tarih: new Date().toISOString().split('T')[0], tur: json.tur || 'Gider', personel: json.personel || (json.tur !== 'Gelir' ? personellerList[0] : null), aciklama: json.aciklama || userMessage, kategori: json.kategori || 'Diğer', netTutar: net, kdvOrani, kdvTutar, toplamTutar: net + kdvTutar } };
     }
@@ -232,7 +241,9 @@ function parseChat(metin, personellerList) {
   if (!tutarMatch) return null;
   const rawTutar = parseFloat(tutarMatch[1].replace(/\./g, '').replace(',', '.'));
   let kdvOrani = 20;
-  if (/%\s*1\b|%1|kdv\s*1/.test(text)) kdvOrani = 1;
+  if (/kira|aidat|rent/.test(text)) kdvOrani = 0;
+  else if (/%\s*0\b|kdv\s*yok|kdvsiz/.test(text)) kdvOrani = 0;
+  else if (/%\s*1\b|%1|kdv\s*1/.test(text)) kdvOrani = 1;
   else if (/%\s*10\b|%10|kdv\s*10/.test(text)) kdvOrani = 10;
   const kdvDahil = /kdv\s*dahil|kdv'li|toplam/.test(text);
   let netTutar, kdvTutar;
@@ -423,6 +434,168 @@ function ExcelPreviewModal({ parsed, errors, onConfirm, onClose }) {
         </div>
       </div>
     </div>
+  );
+}
+
+// ── Sabit Giderler Kartı ─────────────────────────────────────
+function SabitGiderlerCard({ sabitGiderler, onEkle, onSil, onUygula, transactions }) {
+  const buAy = `${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, '0')}`;
+  const buAyEtiket = new Intl.DateTimeFormat('tr-TR', { month: 'long', year: 'numeric' }).format(new Date());
+  const [showForm, setShowForm] = useState(false);
+  const [form, setForm] = useState({ ad: '', tutar: '', kdvOrani: 0, kategori: 'Ofis' });
+  const ic = 'w-full text-xs border border-slate-200 dark:border-slate-600 rounded-lg px-3 py-2 bg-white dark:bg-slate-700 focus:outline-none focus:ring-2 focus:ring-indigo-500';
+
+  const uygulanmislar = new Set(
+    transactions.filter(t => t.sabitGiderId && t.tarih.startsWith(buAy)).map(t => t.sabitGiderId)
+  );
+  const bekleyenler = sabitGiderler.filter(sg => !uygulanmislar.has(sg.id));
+
+  function handleEkle(e) {
+    e.preventDefault();
+    const tutar = parseFloat(form.tutar);
+    if (!form.ad.trim() || !tutar || tutar <= 0) return;
+    onEkle({ id: Date.now(), ad: form.ad.trim(), tutar, kdvOrani: form.kdvOrani, kategori: form.kategori });
+    setForm({ ad: '', tutar: '', kdvOrani: 0, kategori: 'Ofis' });
+    setShowForm(false);
+  }
+
+  return (
+    <Card>
+      <div className="flex items-center justify-between mb-3">
+        <h2 className="text-sm font-semibold flex items-center gap-2">
+          <Calendar size={15} className="text-violet-500" /> Sabit Giderler
+          <span className="text-xs font-normal text-slate-400">(aylık tekrarlayan)</span>
+        </h2>
+        <button onClick={() => setShowForm(s => !s)} className="text-xs px-2.5 py-1.5 rounded-lg bg-violet-50 dark:bg-violet-900/30 text-violet-600 dark:text-violet-400 hover:bg-violet-100 dark:hover:bg-violet-900/50 font-medium flex items-center gap-1">
+          <PlusCircle size={11} /> Tanımla
+        </button>
+      </div>
+
+      {bekleyenler.length > 0 && (
+        <div className="mb-3 p-3 rounded-xl bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-700 flex items-start gap-2">
+          <AlertTriangle size={14} className="text-amber-500 shrink-0 mt-0.5" />
+          <p className="text-xs text-amber-700 dark:text-amber-300 font-medium">
+            {buAyEtiket} için <strong>{bekleyenler.length}</strong> sabit gider henüz tabloya eklenmedi.
+          </p>
+        </div>
+      )}
+
+      {showForm && (
+        <form onSubmit={handleEkle} className="mb-4 p-3 rounded-xl border border-violet-200 dark:border-violet-700 bg-violet-50/50 dark:bg-violet-900/10 space-y-2">
+          <p className="text-xs font-medium text-slate-600 dark:text-slate-300">Yeni Sabit Gider Tanımla</p>
+          <div className="grid grid-cols-2 gap-2">
+            <input value={form.ad} onChange={e => setForm(f => ({ ...f, ad: e.target.value }))} placeholder="Gider adı (ör: Ofis Kirası)" required className={ic} />
+            <input type="number" min="0" step="0.01" value={form.tutar} onChange={e => setForm(f => ({ ...f, tutar: e.target.value }))} placeholder="Aylık tutar (₺)" className={ic} />
+          </div>
+          <div className="grid grid-cols-2 gap-2">
+            <div>
+              <select value={form.kdvOrani} onChange={e => setForm(f => ({ ...f, kdvOrani: parseInt(e.target.value) }))} className={ic}>
+                {KDV_ORANLARI.map(o => <option key={o} value={o}>KDV %{o}{o === 0 ? ' (muaf)' : ''}</option>)}
+              </select>
+            </div>
+            <select value={form.kategori} onChange={e => setForm(f => ({ ...f, kategori: e.target.value }))} className={ic}>
+              {KATEGORILER.map(k => <option key={k}>{k}</option>)}
+            </select>
+          </div>
+          <div className="flex gap-2 justify-end">
+            <button type="button" onClick={() => setShowForm(false)} className="text-xs px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-600 hover:bg-slate-50 dark:hover:bg-slate-700 font-medium">İptal</button>
+            <button type="submit" className="text-xs px-3 py-1.5 rounded-lg bg-violet-600 hover:bg-violet-700 text-white font-medium">Kaydet</button>
+          </div>
+        </form>
+      )}
+
+      {sabitGiderler.length === 0 ? (
+        <p className="text-xs text-slate-400 text-center py-4">Tanımlı sabit gider yok. Kira, abonelik gibi aylık tekrarlayan giderlerinizi ekleyin.</p>
+      ) : (
+        <div className="space-y-2">
+          {sabitGiderler.map(sg => {
+            const uygulandimi = uygulanmislar.has(sg.id);
+            const kdvTutar = hesaplaKdv(sg.tutar, sg.kdvOrani);
+            return (
+              <div key={sg.id} className={`flex items-center justify-between p-3 rounded-xl border transition-colors ${uygulandimi ? 'border-slate-100 dark:border-slate-700 bg-slate-50/50 dark:bg-slate-800/20 opacity-60' : 'border-slate-200 dark:border-slate-600 hover:border-violet-300 dark:hover:border-violet-600'}`}>
+                <div>
+                  <span className="text-sm font-medium">{sg.ad}</span>
+                  <div className="flex gap-3 mt-0.5">
+                    <span className="text-xs text-slate-500">{formatTL(sg.tutar)}</span>
+                    <Badge color={sg.kdvOrani === 0 ? 'green' : 'amber'}>KDV %{sg.kdvOrani}</Badge>
+                    <Badge color="blue">{sg.kategori}</Badge>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  {uygulandimi ? (
+                    <span className="flex items-center gap-1 text-xs text-emerald-600 dark:text-emerald-400 font-medium"><CheckCircle2 size={13} /> Eklendi</span>
+                  ) : (
+                    <button onClick={() => onUygula(sg, buAy)} className="text-xs px-2.5 py-1.5 rounded-lg bg-violet-600 hover:bg-violet-700 text-white font-medium whitespace-nowrap">
+                      Bu Aya Ekle
+                    </button>
+                  )}
+                  <button onClick={() => onSil(sg.id)} className="p-1 rounded text-slate-300 hover:text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-900/20 transition-colors"><X size={12} /></button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </Card>
+  );
+}
+
+// ── Ofis Giderleri Kartı ─────────────────────────────────────
+function OfisGiderleriCard({ onAdd }) {
+  const today = new Date().toISOString().split('T')[0];
+  const [form, setForm] = useState({ aciklama: '', tutar: '', kdvOrani: 20, kdvDahil: false, tarih: today, kategori: 'Ofis' });
+  const ic = 'w-full text-xs border border-slate-200 dark:border-slate-600 rounded-lg px-3 py-2 bg-white dark:bg-slate-700 focus:outline-none focus:ring-2 focus:ring-indigo-500';
+  const raw = parseFloat(form.tutar) || 0;
+  const kdvTutar = form.kdvDahil ? raw - Math.round(raw / (1 + form.kdvOrani / 100)) : hesaplaKdv(raw, form.kdvOrani);
+  const netGercek = form.kdvDahil ? raw - kdvTutar : raw;
+
+  function handleSubmit(e) {
+    e.preventDefault();
+    if (!raw || raw <= 0 || !form.aciklama.trim()) return;
+    onAdd({
+      id: Date.now(), tarih: form.tarih, tur: 'Gider', personel: null,
+      aciklama: form.aciklama.trim(), kategori: form.kategori,
+      netTutar: netGercek, kdvOrani: form.kdvOrani, kdvTutar, toplamTutar: netGercek + kdvTutar,
+    });
+    setForm({ aciklama: '', tutar: '', kdvOrani: 20, kdvDahil: false, tarih: today, kategori: 'Ofis' });
+  }
+
+  return (
+    <Card>
+      <h2 className="text-sm font-semibold mb-3 flex items-center gap-2">
+        <Wallet size={15} className="text-teal-500" /> Ofis / Genel Gider
+        <span className="text-xs font-normal text-slate-400">(personelsiz hızlı giriş)</span>
+      </h2>
+      <form onSubmit={handleSubmit} className="space-y-3">
+        <div className="grid grid-cols-2 gap-2">
+          <div className="col-span-2">
+            <input value={form.aciklama} onChange={e => setForm(f => ({ ...f, aciklama: e.target.value }))} placeholder="Gider açıklaması..." required className={ic} />
+          </div>
+        </div>
+        <div className="grid grid-cols-3 gap-2">
+          <input type="number" min="0" step="0.01" value={form.tutar} onChange={e => setForm(f => ({ ...f, tutar: e.target.value }))} placeholder="Tutar (₺)" className={ic} />
+          <select value={form.kdvOrani} onChange={e => setForm(f => ({ ...f, kdvOrani: parseInt(e.target.value) }))} className={ic}>
+            {KDV_ORANLARI.map(o => <option key={o} value={o}>KDV %{o}</option>)}
+          </select>
+          <select value={form.kategori} onChange={e => setForm(f => ({ ...f, kategori: e.target.value }))} className={ic}>
+            {KATEGORILER.map(k => <option key={k}>{k}</option>)}
+          </select>
+        </div>
+        <div className="flex items-center gap-3">
+          <input type="date" value={form.tarih} onChange={e => setForm(f => ({ ...f, tarih: e.target.value }))} className="text-xs border border-slate-200 dark:border-slate-600 rounded-lg px-2 py-2 bg-white dark:bg-slate-700 focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+          <label className="flex items-center gap-1.5 cursor-pointer select-none">
+            <input type="checkbox" checked={form.kdvDahil} onChange={e => setForm(f => ({ ...f, kdvDahil: e.target.checked }))} className="w-3.5 h-3.5 accent-indigo-600" />
+            <span className="text-xs text-slate-500">KDV dahil</span>
+          </label>
+          {raw > 0 && (
+            <span className="text-xs text-slate-400 ml-auto">Net: <strong className="text-slate-600 dark:text-slate-200">{formatTL(netGercek)}</strong> + KDV: <strong className="text-amber-600">{formatTL(kdvTutar)}</strong></span>
+          )}
+        </div>
+        <button type="submit" disabled={!raw || !form.aciklama.trim()} className="w-full text-xs py-2.5 rounded-xl bg-teal-600 hover:bg-teal-700 disabled:opacity-40 text-white font-medium flex items-center justify-center gap-1.5">
+          <PlusCircle size={13} /> Gider Tablosuna Ekle
+        </button>
+      </form>
+    </Card>
   );
 }
 
@@ -1014,6 +1187,7 @@ export default function App() {
   const [proformalar, setProformalar]       = useState(() => lsGet(LS.proforma, []));
   const [musteriler, setMusteriler]         = useState(() => lsGet(LS.musteriler, []));
   const [logo, setLogo]                     = useState(() => lsGet(LS.logo, ''));
+  const [sabitGiderler, setSabitGiderler]   = useState(() => lsGet(LS.sabitGiderler, []));
 
   // localStorage'a kaydet
   useEffect(() => lsSet(LS.tx, transactions),          [transactions]);
@@ -1023,6 +1197,7 @@ export default function App() {
   useEffect(() => lsSet(LS.proforma, proformalar),     [proformalar]);
   useEffect(() => lsSet(LS.musteriler, musteriler),    [musteriler]);
   useEffect(() => lsSet(LS.logo, logo),                [logo]);
+  useEffect(() => lsSet(LS.sabitGiderler, sabitGiderler), [sabitGiderler]);
 
   // Chat
   const [chatInput, setChatInput] = useState('');
@@ -1251,6 +1426,26 @@ export default function App() {
                 </Card>
               );
             })()}
+
+            {/* SABİT GİDERLER + OFİS GİDERLERİ */}
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+              <SabitGiderlerCard
+                sabitGiderler={sabitGiderler}
+                onEkle={sg => setSabitGiderler(p => [...p, sg])}
+                onSil={id => setSabitGiderler(p => p.filter(sg => sg.id !== id))}
+                onUygula={(sg, buAy) => {
+                  const kdvTutar = hesaplaKdv(sg.tutar, sg.kdvOrani);
+                  setTransactions(p => [{
+                    id: Date.now(), tarih: `${buAy}-01`, tur: 'Gider', personel: null,
+                    aciklama: sg.ad, kategori: sg.kategori,
+                    netTutar: sg.tutar, kdvOrani: sg.kdvOrani, kdvTutar, toplamTutar: sg.tutar + kdvTutar,
+                    sabitGiderId: sg.id,
+                  }, ...p]);
+                }}
+                transactions={transactions}
+              />
+              <OfisGiderleriCard onAdd={r => setTransactions(p => [r, ...p])} />
+            </div>
 
             {/* CHAT + GRAFİKLER */}
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">

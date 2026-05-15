@@ -179,6 +179,52 @@ function exportKasaExcel(hareketler) {
 }
 
 // ── Doğal Dil Parser ─────────────────────────────────────────
+async function askGemini(userMessage, transactions, personellerList) {
+  const key = import.meta.env.VITE_GROQ_API_KEY;
+  const toplamGelir = transactions.filter(t => t.tur === 'Gelir').reduce((s, t) => s + t.netTutar, 0);
+  const toplamGider = transactions.filter(t => t.tur === 'Gider').reduce((s, t) => s + t.netTutar, 0);
+
+  const systemPrompt = `Sen bir muhasebe asistanısın. Türkçe konuşursun.
+
+Mevcut durum:
+- Toplam kayıt: ${transactions.length}
+- Toplam gelir: ${toplamGelir} TL
+- Toplam gider: ${toplamGider} TL
+- Net kâr: ${toplamGelir - toplamGider} TL
+- Personel: ${personellerList.join(', ')}
+- Kategoriler: Ofis, Üretim/Tarım, Pazarlama, Seyahat, Diğer
+
+Kullanıcı yeni bir işlem girmek istiyorsa YALNIZCA şu JSON'u döndür (başka hiç metin ekleme):
+{"tip":"islem","tur":"Gelir","aciklama":"...","netTutar":1000,"kdvOrani":20,"kategori":"Ofis","personel":"Personel 1"}
+
+Soru soruyorsa kısa ve net Türkçe yanıt ver.`;
+
+  const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${key}` },
+    body: JSON.stringify({
+      model: 'llama-3.3-70b-versatile',
+      messages: [{ role: 'system', content: systemPrompt }, { role: 'user', content: userMessage }],
+      temperature: 0.1, max_tokens: 512
+    })
+  });
+  const data = await res.json();
+  if (data.error) throw new Error(data.error.code === 'rate_limit_exceeded' ? 'QUOTA' : data.error.message);
+  const text = (data.choices?.[0]?.message?.content || '').trim();
+
+  try {
+    const clean = text.replace(/```json|```/g, '').trim();
+    const json = JSON.parse(clean);
+    if (json.tip === 'islem') {
+      const net = Number(json.netTutar) || 0;
+      const kdvOrani = Number(json.kdvOrani) || 20;
+      const kdvTutar = hesaplaKdv(net, kdvOrani);
+      return { type: 'transaction', data: { id: Date.now(), tarih: new Date().toISOString().split('T')[0], tur: json.tur || 'Gider', personel: json.personel || (json.tur !== 'Gelir' ? personellerList[0] : null), aciklama: json.aciklama || userMessage, kategori: json.kategori || 'Diğer', netTutar: net, kdvOrani, kdvTutar, toplamTutar: net + kdvTutar } };
+    }
+  } catch (_) {}
+  return { type: 'answer', text };
+}
+
 function parseChat(metin, personellerList) {
   const text = metin.toLowerCase();
   const tur = /gelir|satış|tahsil|kazanç|ödeme aldık|müşteriden/.test(text) ? 'Gelir' : 'Gider';
@@ -1052,16 +1098,29 @@ export default function App() {
     }).sort((a, b) => new Date(b.tarih) - new Date(a.tarih)),
     [dateTx, filterTur, filterPersonel, filterKategori]);
 
-  function handleChatSubmit(e) {
+  async function handleChatSubmit(e) {
     e.preventDefault();
-    if (!chatInput.trim()) return;
-    const parsed = parseChat(chatInput, personeller);
-    const bot = parsed
-      ? { from: 'bot', text: `✅ Eklendi: ${parsed.tur} — ${formatTL(parsed.toplamTutar)} (KDV %${parsed.kdvOrani}) | ${parsed.kategori}${parsed.personel ? ` | ${parsed.personel}` : ''}` }
-      : { from: 'bot', text: '❌ Tutar bulunamadı. Lütfen "500 TL" gibi bir tutar belirtin.' };
-    if (parsed) setTransactions(p => [parsed, ...p]);
-    setChatLog(p => [...p, { from: 'user', text: chatInput }, bot]);
+    const msg = chatInput.trim();
+    if (!msg) return;
     setChatInput('');
+    setChatLog(p => [...p, { from: 'user', text: msg }, { from: 'bot', text: '...', loading: true }]);
+    try {
+      const result = await askGemini(msg, transactions, personeller);
+      if (result.type === 'transaction') {
+        setTransactions(p => [result.data, ...p]);
+        const d = result.data;
+        setChatLog(p => [...p.slice(0, -1), { from: 'bot', text: `✅ Eklendi: ${d.tur} — ${formatTL(d.toplamTutar)} (KDV %${d.kdvOrani}) | ${d.kategori}${d.personel ? ` | ${d.personel}` : ''}` }]);
+      } else {
+        setChatLog(p => [...p.slice(0, -1), { from: 'bot', text: result.text }]);
+      }
+    } catch (_) {
+      const parsed = parseChat(msg, personeller);
+      const bot = parsed
+        ? { from: 'bot', text: `✅ Eklendi: ${parsed.tur} — ${formatTL(parsed.toplamTutar)} (KDV %${parsed.kdvOrani}) | ${parsed.kategori}${parsed.personel ? ` | ${parsed.personel}` : ''}` }
+        : { from: 'bot', text: _.message === 'QUOTA' ? '⚠️ Gemini kota limitine ulaşıldı. Google AI Studio\'dan kotanızı kontrol edin.' : '❌ Gemini bağlanamadı. Lütfen tekrar deneyin.' };
+      if (parsed) setTransactions(p => [parsed, ...p]);
+      setChatLog(p => [...p.slice(0, -1), bot]);
+    }
   }
 
   function handleExcelUpload(e) {
@@ -1200,7 +1259,9 @@ export default function App() {
                 <div className="flex-1 overflow-y-auto space-y-2 mb-3 pr-1">
                   {chatLog.map((msg, i) => (
                     <div key={i} className={`flex ${msg.from === 'user' ? 'justify-end' : 'justify-start'}`}>
-                      <div className={`max-w-[90%] rounded-2xl px-3 py-2 text-xs leading-relaxed ${msg.from === 'user' ? 'bg-indigo-600 text-white rounded-br-sm' : 'bg-slate-100 dark:bg-slate-700 text-slate-700 dark:text-slate-200 rounded-bl-sm'}`}>{msg.text}</div>
+                      <div className={`max-w-[90%] rounded-2xl px-3 py-2 text-xs leading-relaxed ${msg.from === 'user' ? 'bg-indigo-600 text-white rounded-br-sm' : 'bg-slate-100 dark:bg-slate-700 text-slate-700 dark:text-slate-200 rounded-bl-sm'}`}>
+                        {msg.loading ? <span className="animate-pulse">Gemini düşünüyor...</span> : msg.text}
+                      </div>
                     </div>
                   ))}
                 </div>

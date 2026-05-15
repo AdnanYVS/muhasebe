@@ -1073,12 +1073,12 @@ export default function App() {
   }
 
   function handleResetAll() {
-    setTransactions(MOCK_DATA);
-    setKasaHareketleri(MOCK_KASA);
+    setTransactions([]);
+    setKasaHareketleri([]);
     setPersoneller(DEFAULT_PERSONELLER);
     setButceler(BUTCE_DEFAULT);
     setProformalar([]);
-    lsSet(LS.tx, MOCK_DATA); lsSet(LS.kasa, MOCK_KASA); lsSet(LS.personeller, DEFAULT_PERSONELLER); lsSet(LS.butce, BUTCE_DEFAULT); lsSet(LS.proforma, []);
+    lsSet(LS.tx, []); lsSet(LS.kasa, []); lsSet(LS.personeller, DEFAULT_PERSONELLER); lsSet(LS.butce, BUTCE_DEFAULT); lsSet(LS.proforma, []);
   }
 
   const toggleDark = () => { setIsDark(d => !d); document.documentElement.classList.toggle('dark'); };

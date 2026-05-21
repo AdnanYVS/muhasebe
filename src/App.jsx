@@ -5,7 +5,8 @@ import {
   Send, Filter, Trash2, PlusCircle, BarChart2, X, ClipboardList,
   Upload, Download, Landmark, ArrowUpCircle, ArrowDownCircle,
   CheckCircle2, RefreshCw, LayoutDashboard, Settings, Calendar,
-  FileSpreadsheet, UserPlus, AlertTriangle, Target, FileText
+  FileSpreadsheet, UserPlus, AlertTriangle, Target, FileText,
+  CreditCard, Building2, User, CircleCheck
 } from 'lucide-react';
 import {
   PieChart, Pie, Cell, Tooltip, Legend, ResponsiveContainer,
@@ -17,7 +18,7 @@ const DEFAULT_PERSONELLER = ['Personel 1', 'Personel 2', 'Personel 3'];
 const KATEGORILER = ['Ofis', 'Üretim/Tarım', 'Pazarlama', 'Seyahat', 'Diğer'];
 const KDV_ORANLARI = [0, 1, 10, 20];
 const RENK_PALETI = ['#6366f1', '#22d3ee', '#f59e0b', '#10b981', '#f43f5e'];
-const LS = { tx: 'muh_tx', kasa: 'muh_kasa', personeller: 'muh_personeller', butce: 'muh_butce', proforma: 'muh_proforma', musteriler: 'muh_musteriler', logo: 'muh_logo', sabitGiderler: 'muh_sabit' };
+const LS = { tx: 'muh_tx', kasa: 'muh_kasa', personeller: 'muh_personeller', butce: 'muh_butce', proforma: 'muh_proforma', musteriler: 'muh_musteriler', logo: 'muh_logo', sabitGiderler: 'muh_sabit', borclar: 'muh_borclar' };
 const BUTCE_DEFAULT = Object.fromEntries(KATEGORILER.map(k => [k, 0]));
 const BIRIMLER = ['Adet', 'Kg', 'Ton', 'm²', 'Saat', 'Gün', 'Ay'];
 
@@ -1008,6 +1009,233 @@ function ProformaTab({ proformalar, onAdd, onUpdate, onDelete, onAktar, musteril
   );
 }
 
+// ── Borçlar Sekmesi ──────────────────────────────────────────
+const BORC_TURLERI = ['Şahıs', 'Firma'];
+
+function BorclarTab({ borclar, onEkle, onSil, onOdendi }) {
+  const today = new Date().toISOString().split('T')[0];
+  const emptyForm = { tarih: today, borcluAdi: '', tur: 'Şahıs', aciklama: '', tutar: '', vadeTarihi: '' };
+  const [form, setForm] = useState(emptyForm);
+  const [filtreTur, setFiltreTur] = useState('Tümü');
+  const [filtreOdeme, setFiltreOdeme] = useState('Tümü'); // 'Tümü' | 'Ödenmemiş' | 'Ödendi'
+
+  const ic = 'w-full text-xs border border-slate-200 dark:border-slate-600 rounded-lg px-3 py-2 bg-white dark:bg-slate-700 focus:outline-none focus:ring-2 focus:ring-indigo-500';
+
+  function handleSubmit(e) {
+    e.preventDefault();
+    const tutar = parseFloat(form.tutar);
+    if (!tutar || tutar <= 0 || !form.borcluAdi.trim()) return;
+    onEkle({
+      id: Date.now(),
+      tarih: form.tarih,
+      borcluAdi: form.borcluAdi.trim(),
+      tur: form.tur,
+      aciklama: form.aciklama.trim(),
+      tutar,
+      vadeTarihi: form.vadeTarihi || null,
+      odendi: false,
+      odenmeTarihi: null,
+    });
+    setForm(emptyForm);
+  }
+
+  const goruntu = borclar
+    .filter(b => {
+      if (filtreTur !== 'Tümü' && b.tur !== filtreTur) return false;
+      if (filtreOdeme === 'Ödenmemiş' && b.odendi) return false;
+      if (filtreOdeme === 'Ödendi' && !b.odendi) return false;
+      return true;
+    })
+    .sort((a, b) => new Date(b.tarih) - new Date(a.tarih));
+
+  const toplamBekleyen = borclar.filter(b => !b.odendi).reduce((s, b) => s + b.tutar, 0);
+  const toplamOdendi   = borclar.filter(b => b.odendi).reduce((s, b) => s + b.tutar, 0);
+  const toplamSahis    = borclar.filter(b => !b.odendi && b.tur === 'Şahıs').reduce((s, b) => s + b.tutar, 0);
+  const toplamFirma    = borclar.filter(b => !b.odendi && b.tur === 'Firma').reduce((s, b) => s + b.tutar, 0);
+
+  const gecmisBorclar = borclar.filter(b => !b.odendi && b.vadeTarihi && b.vadeTarihi < today);
+
+  return (
+    <div className="space-y-6">
+      {/* Özet kartları */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+        <Card>
+          <p className="text-xs text-slate-500 dark:text-slate-400 font-medium uppercase tracking-wide mb-1">Bekleyen Borç</p>
+          <p className="text-2xl font-bold text-rose-600 dark:text-rose-400">{formatTL(toplamBekleyen)}</p>
+          <p className="text-xs text-slate-400 mt-1">{borclar.filter(b => !b.odendi).length} kayıt</p>
+        </Card>
+        <Card>
+          <p className="text-xs text-slate-500 dark:text-slate-400 font-medium uppercase tracking-wide mb-1">Şahıs Borcu</p>
+          <p className="text-2xl font-bold text-amber-600 dark:text-amber-400">{formatTL(toplamSahis)}</p>
+          <p className="text-xs text-slate-400 mt-1">{borclar.filter(b => !b.odendi && b.tur === 'Şahıs').length} kayıt</p>
+        </Card>
+        <Card>
+          <p className="text-xs text-slate-500 dark:text-slate-400 font-medium uppercase tracking-wide mb-1">Firma Borcu</p>
+          <p className="text-2xl font-bold text-indigo-600 dark:text-indigo-400">{formatTL(toplamFirma)}</p>
+          <p className="text-xs text-slate-400 mt-1">{borclar.filter(b => !b.odendi && b.tur === 'Firma').length} kayıt</p>
+        </Card>
+        <Card>
+          <p className="text-xs text-slate-500 dark:text-slate-400 font-medium uppercase tracking-wide mb-1">Ödenen Borç</p>
+          <p className="text-2xl font-bold text-emerald-600 dark:text-emerald-400">{formatTL(toplamOdendi)}</p>
+          <p className="text-xs text-slate-400 mt-1">{borclar.filter(b => b.odendi).length} kayıt</p>
+        </Card>
+      </div>
+
+      {/* Vadesi geçmiş uyarı */}
+      {gecmisBorclar.length > 0 && (
+        <div className="flex items-start gap-3 rounded-xl border border-rose-200 dark:border-rose-800 bg-rose-50 dark:bg-rose-900/20 p-4">
+          <AlertTriangle size={15} className="text-rose-600 dark:text-rose-400 mt-0.5 shrink-0" />
+          <div>
+            <p className="text-xs font-semibold text-rose-700 dark:text-rose-400">Vadesi Geçmiş {gecmisBorclar.length} Borç</p>
+            <p className="text-xs text-rose-600 dark:text-rose-400 mt-0.5">
+              {gecmisBorclar.map(b => `${b.borcluAdi} — ${formatTL(b.tutar)}`).join(' · ')}
+            </p>
+          </div>
+        </div>
+      )}
+
+      <div className="grid lg:grid-cols-3 gap-6">
+        {/* Yeni Borç Formu */}
+        <Card className="lg:col-span-1">
+          <h2 className="text-sm font-semibold mb-4 flex items-center gap-2">
+            <CreditCard size={15} className="text-indigo-500" /> Yeni Borç Ekle
+          </h2>
+          <form onSubmit={handleSubmit} className="space-y-3">
+            <div>
+              <label className="text-xs font-medium text-slate-500 mb-1.5 block">Borçlu Adı / Firma</label>
+              <input type="text" value={form.borcluAdi} onChange={e => setForm(f => ({ ...f, borcluAdi: e.target.value }))}
+                placeholder="Ad Soyad veya Firma Adı" className={ic} required />
+            </div>
+            <div>
+              <label className="text-xs font-medium text-slate-500 mb-1.5 block">Tür</label>
+              <div className="flex gap-2">
+                {BORC_TURLERI.map(t => (
+                  <button key={t} type="button" onClick={() => setForm(f => ({ ...f, tur: t }))}
+                    className={`flex-1 flex items-center justify-center gap-1.5 text-xs py-2 rounded-lg border font-medium transition-colors
+                      ${form.tur === t ? 'bg-indigo-600 text-white border-indigo-600' : 'border-slate-200 dark:border-slate-600 hover:bg-slate-50 dark:hover:bg-slate-700'}`}>
+                    {t === 'Şahıs' ? <User size={11} /> : <Building2 size={11} />} {t}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div>
+              <label className="text-xs font-medium text-slate-500 mb-1.5 block">Açıklama</label>
+              <input type="text" value={form.aciklama} onChange={e => setForm(f => ({ ...f, aciklama: e.target.value }))}
+                placeholder="Borç sebebi..." className={ic} />
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="text-xs font-medium text-slate-500 mb-1.5 block">Tutar (₺)</label>
+                <input type="number" min="0" step="0.01" value={form.tutar} onChange={e => setForm(f => ({ ...f, tutar: e.target.value }))}
+                  placeholder="0" className={ic} required />
+              </div>
+              <div>
+                <label className="text-xs font-medium text-slate-500 mb-1.5 block">Tarih</label>
+                <input type="date" value={form.tarih} onChange={e => setForm(f => ({ ...f, tarih: e.target.value }))} className={ic} />
+              </div>
+            </div>
+            <div>
+              <label className="text-xs font-medium text-slate-500 mb-1.5 block">Vade Tarihi <span className="font-normal text-slate-400">(opsiyonel)</span></label>
+              <input type="date" value={form.vadeTarihi} onChange={e => setForm(f => ({ ...f, vadeTarihi: e.target.value }))} className={ic} />
+            </div>
+            <button type="submit"
+              className="w-full text-xs py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white font-medium flex items-center justify-center gap-1.5">
+              <PlusCircle size={13} /> Borç Ekle
+            </button>
+          </form>
+        </Card>
+
+        {/* Borç Listesi */}
+        <Card className="lg:col-span-2">
+          <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
+            <h2 className="text-sm font-semibold flex items-center gap-2">
+              <Filter size={14} className="text-slate-400" /> Borç Listesi
+              <Badge color="violet">{goruntu.length} kayıt</Badge>
+            </h2>
+            <div className="flex items-center gap-2">
+              <select value={filtreTur} onChange={e => setFiltreTur(e.target.value)}
+                className="text-xs border border-slate-200 dark:border-slate-600 rounded-lg px-2 py-1.5 bg-white dark:bg-slate-700 focus:outline-none">
+                <option>Tümü</option>
+                {BORC_TURLERI.map(t => <option key={t}>{t}</option>)}
+              </select>
+              <select value={filtreOdeme} onChange={e => setFiltreOdeme(e.target.value)}
+                className="text-xs border border-slate-200 dark:border-slate-600 rounded-lg px-2 py-1.5 bg-white dark:bg-slate-700 focus:outline-none">
+                <option>Tümü</option>
+                <option>Ödenmemiş</option>
+                <option>Ödendi</option>
+              </select>
+            </div>
+          </div>
+
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="border-b border-slate-100 dark:border-slate-700">
+                  <th className="px-3 py-2.5 text-left font-medium text-slate-400">Tarih</th>
+                  <th className="px-3 py-2.5 text-left font-medium text-slate-400">Alacaklı</th>
+                  <th className="px-3 py-2.5 text-left font-medium text-slate-400">Açıklama</th>
+                  <th className="px-3 py-2.5 text-left font-medium text-slate-400">Vade</th>
+                  <th className="px-3 py-2.5 text-right font-medium text-slate-400">Tutar</th>
+                  <th className="px-3 py-2.5 text-center font-medium text-slate-400">Durum</th>
+                  <th className="px-3 py-2.5"></th>
+                </tr>
+              </thead>
+              <tbody>
+                {goruntu.map(b => {
+                  const vadeGecti = !b.odendi && b.vadeTarihi && b.vadeTarihi < today;
+                  return (
+                    <tr key={b.id} className={`border-b border-slate-50 dark:border-slate-700/50 hover:bg-slate-50 dark:hover:bg-slate-700/30 transition-colors ${b.odendi ? 'opacity-60' : ''}`}>
+                      <td className="px-3 py-3 text-slate-500 whitespace-nowrap">{b.tarih}</td>
+                      <td className="px-3 py-3">
+                        <div className="flex items-center gap-1.5">
+                          {b.tur === 'Şahıs' ? <User size={11} className="text-amber-500 shrink-0" /> : <Building2 size={11} className="text-indigo-500 shrink-0" />}
+                          <span className="font-medium">{b.borcluAdi}</span>
+                        </div>
+                      </td>
+                      <td className="px-3 py-3 text-slate-500 max-w-[160px] truncate">{b.aciklama || '—'}</td>
+                      <td className="px-3 py-3 whitespace-nowrap">
+                        {b.vadeTarihi
+                          ? <span className={vadeGecti ? 'text-rose-600 dark:text-rose-400 font-semibold' : 'text-slate-500'}>{b.vadeTarihi}</span>
+                          : <span className="text-slate-300">—</span>}
+                      </td>
+                      <td className="px-3 py-3 text-right font-semibold text-rose-600 dark:text-rose-400 whitespace-nowrap">{formatTL(b.tutar)}</td>
+                      <td className="px-3 py-3 text-center">
+                        {b.odendi
+                          ? <Badge color="green">Ödendi</Badge>
+                          : vadeGecti
+                            ? <Badge color="red">Vadesi Geçti</Badge>
+                            : <Badge color="amber">Bekliyor</Badge>}
+                      </td>
+                      <td className="px-3 py-3">
+                        <div className="flex items-center gap-1 justify-end">
+                          {!b.odendi && (
+                            <button onClick={() => onOdendi(b.id)}
+                              title="Ödendi olarak işaretle"
+                              className="p-1 rounded text-slate-300 hover:text-emerald-600 hover:bg-emerald-50 dark:hover:bg-emerald-900/20 transition-colors">
+                              <CircleCheck size={13} />
+                            </button>
+                          )}
+                          <button onClick={() => onSil(b.id)}
+                            className="p-1 rounded text-slate-300 hover:text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-900/20 transition-colors">
+                            <X size={12} />
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+                {goruntu.length === 0 && (
+                  <tr><td colSpan={7} className="px-4 py-8 text-center text-slate-400">Kayıt bulunamadı</td></tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </Card>
+      </div>
+    </div>
+  );
+}
+
 // ── Ayarlar Sekmesi ──────────────────────────────────────────
 function AyarlarTab({ personeller, onPersonelEkle, onPersonelSil, transactions, kasaHareketleri, onResetAll, butceler, onButceChange, musteriler, onMusteriEkle, onMusteriSil, logo, onLogoChange }) {
   const [yeni, setYeni] = useState('');
@@ -1188,6 +1416,7 @@ export default function App() {
   const [musteriler, setMusteriler]         = useState(() => lsGet(LS.musteriler, []));
   const [logo, setLogo]                     = useState(() => lsGet(LS.logo, ''));
   const [sabitGiderler, setSabitGiderler]   = useState(() => lsGet(LS.sabitGiderler, []));
+  const [borclar, setBorclar]               = useState(() => lsGet(LS.borclar, []));
 
   // localStorage'a kaydet
   useEffect(() => lsSet(LS.tx, transactions),          [transactions]);
@@ -1198,6 +1427,7 @@ export default function App() {
   useEffect(() => lsSet(LS.musteriler, musteriler),    [musteriler]);
   useEffect(() => lsSet(LS.logo, logo),                [logo]);
   useEffect(() => lsSet(LS.sabitGiderler, sabitGiderler), [sabitGiderler]);
+  useEffect(() => lsSet(LS.borclar, borclar),          [borclar]);
 
   // Chat
   const [chatInput, setChatInput] = useState('');
@@ -1318,11 +1548,12 @@ export default function App() {
   const toggleDark = () => { setIsDark(d => !d); document.documentElement.classList.toggle('dark'); };
 
   const TABS = [
-    { id: 'dashboard', label: 'Dashboard',     icon: <LayoutDashboard size={13} /> },
-    { id: 'kasa',      label: 'Kasa & Banka',  icon: <Landmark size={13} /> },
-    { id: 'kdv',       label: 'KDV Beyanname',    icon: <FileText size={13} /> },
+    { id: 'dashboard', label: 'Dashboard',       icon: <LayoutDashboard size={13} /> },
+    { id: 'kasa',      label: 'Kasa & Banka',    icon: <Landmark size={13} /> },
+    { id: 'borclar',   label: 'Borçlar',          icon: <CreditCard size={13} /> },
+    { id: 'kdv',       label: 'KDV Beyanname',   icon: <FileText size={13} /> },
     { id: 'proforma',  label: 'Proforma Fatura', icon: <Receipt size={13} /> },
-    { id: 'ayarlar',   label: 'Ayarlar',          icon: <Settings size={13} /> },
+    { id: 'ayarlar',   label: 'Ayarlar',         icon: <Settings size={13} /> },
   ];
 
   return (
@@ -1565,6 +1796,16 @@ export default function App() {
               aylikTrend={aylikTrend}
               onKasaEkle={h => setKasaHareketleri(p => [h, ...p])}
               onKasaDelete={id => setKasaHareketleri(p => p.filter(h => h.id !== id))}
+            />
+          )}
+
+          {/* ── BORÇLAR ── */}
+          {activeTab === 'borclar' && (
+            <BorclarTab
+              borclar={borclar}
+              onEkle={b => setBorclar(p => [b, ...p])}
+              onSil={id => setBorclar(p => p.filter(b => b.id !== id))}
+              onOdendi={id => setBorclar(p => p.map(b => b.id === id ? { ...b, odendi: true, odenmeTarihi: new Date().toISOString().split('T')[0] } : b))}
             />
           )}
 
